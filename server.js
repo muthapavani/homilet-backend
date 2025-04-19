@@ -20,7 +20,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Fixed CORS configuration (removed duplicate CORS setup)
 const corsOptions = {
   origin: function (origin, callback) {
-    const allowedOrigins = ['https://homiletfrontend.vercel.app','http://localhost:5173', 'http://localhost:5174'];
+    const allowedOrigins = ['https://homiletfrontend-dmtr.vercel.app','http://localhost:5173', 'http://localhost:5174'];
     if (!origin || allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
