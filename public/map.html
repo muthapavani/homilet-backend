@@ -1,0 +1,115 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Property Map</title>
+  <style>
+    #map {
+      height: 500px;
+      width: 100%;
+    }
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+    }
+    .error-message {
+      color: red;
+      padding: 20px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>Property Map</h1>
+  <div id="map"></div>
+  <div id="error-container"></div>
+
+  <script>
+    // Initialize the map
+    function initMap() {
+      // Default center (can be changed to user's location)
+      const defaultCenter = { lat: 20.5937, lng: 78.9629 }; // Center of India
+      
+      const map = new google.maps.Map(document.getElementById("map"), {
+        zoom: 5,
+        center: defaultCenter,
+      });
+
+      // Fetch properties from API to display on map
+      fetch('/api/properties')
+        .then(response => response.json())
+        .then(properties => {
+          if (properties.length === 0) {
+            console.log('No properties found with location data');
+            return;
+          }
+          
+          properties.forEach(property => {
+            if (property.latitude && property.longitude) {
+              const marker = new google.maps.Marker({
+                position: { lat: parseFloat(property.latitude), lng: parseFloat(property.longitude) },
+                map: map,
+                title: property.title
+              });
+
+              const infoWindow = new google.maps.InfoWindow({
+                content: `
+                  <div>
+                    <h3>${property.title}</h3>
+                    <p>${property.address}, ${property.city}</p>
+                    <p>${property.price}</p>
+                    <a href="/property/${property.id}" target="_blank">View Details</a>
+                  </div>
+                `
+              });
+
+              marker.addListener('click', () => {
+                infoWindow.open(map, marker);
+              });
+            }
+          });
+        })
+        .catch(error => {
+          console.error('Error loading properties:', error);
+          document.getElementById('error-container').innerHTML = 
+            '<p class="error-message">Error loading properties. Please try again later.</p>';
+        });
+    }
+
+    function handleMapError() {
+      document.getElementById('map').innerHTML = 
+        '<p class="error-message">Failed to load Google Maps. Please check your API key.</p>';
+    }
+  </script>
+  <script>
+    // Dynamically load the Google Maps API with the key from the server
+    fetch('/api/maps/key')
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('API key not available');
+        }
+        return response.json();
+      })
+      .then(data => {
+        if (!data.apiKey) {
+          throw new Error('Invalid API key');
+        }
+        
+        const script = document.createElement('script');
+        script.src = `https://maps.googleapis.com/maps/api/js?key=${data.apiKey}&callback=initMap`;
+        script.async = true;
+        script.defer = true;
+        script.onerror = handleMapError;
+        document.head.appendChild(script);
+      })
+      .catch(error => {
+        console.error('Error loading Google Maps API:', error);
+        handleMapError();
+      });
+  </script>
+</body>
+</html>
+    
