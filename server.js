@@ -375,11 +375,12 @@ const SECRET_KEY = process.env.JWT_SECRET;
 // Verification Token Middleware
 const verifyToken = (req, res, next) => {
   const authHeader = req.headers["authorization"];
-  console.log('Received authorization header:', authHeader); 
+  console.log('Received authorization header:', authHeader ? 'Auth header exists' : 'No auth header'); 
   
   if (!authHeader) {
     return res.status(403).json({ 
-      message: " Authentication required",
+      success: false,
+      message: "Authentication required",
       details: "No authorization header provided"
     });
   }
@@ -389,17 +390,19 @@ const verifyToken = (req, res, next) => {
     console.log('Token parts length:', tokenParts.length); 
     if (tokenParts.length !== 2 || tokenParts[0] !== "Bearer") {
       return res.status(401).json({ 
-        message: " Invalid authentication format",
+        success: false,
+        message: "Invalid authentication format",
         details: "Authorization header must be in format: Bearer [token]"
       });
     }
     
-    const token = tokenParts[1];
+    const token = tokenParts[1].trim(); // Trim whitespace
     
     // Check if token is empty or malformed
     if (!token || token === "null" || token === "undefined") {
       return res.status(401).json({ 
-        message: " Invalid token",
+        success: false,
+        message: "Invalid token",
         details: "Token cannot be empty, null, or undefined"
       });
     }
@@ -423,7 +426,8 @@ const verifyToken = (req, res, next) => {
     
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({ 
-        message: " Token expired", 
+        success: false,
+        message: "Token expired", 
         details: "Please log in again",
         expiredAt: error.expiredAt 
       });
@@ -431,26 +435,28 @@ const verifyToken = (req, res, next) => {
     
     if (error.name === 'JsonWebTokenError') {
       return res.status(401).json({ 
-        message: " Invalid token", 
+        success: false,
+        message: "Invalid token", 
         details: error.message 
       });
     }
     
     if (error.name === 'NotBeforeError') {
       return res.status(401).json({ 
-        message: " Token not active yet", 
+        success: false,
+        message: "Token not active yet", 
         details: error.message,
         notBefore: error.date
       });
     }
     
     return res.status(401).json({ 
-      message: " Authentication failed",
+      success: false,
+      message: "Authentication failed",
       details: error.message || "Unknown error" 
     });
   }
 };
-
 
 // Helper functions
 const validateCoordinates = (lat, lng) => {
@@ -758,6 +764,7 @@ app.post("/login", async (req, res) => {
     // Generate JWT token
     const token = jwt.sign(
       {
+        id: user.id, // NEW
         userId: user.id,
         email: user.email,
         isGuest: user.is_guest || false,
@@ -766,6 +773,7 @@ app.post("/login", async (req, res) => {
       JWT_SECRET, 
       { expiresIn: "24h" }
     );
+    
     
     console.log("Login successful for user:", user.email);
     
@@ -1498,36 +1506,36 @@ app.use((err, req, res, next) => {
   }
 })();
 // // Add is_active column to properties table if it doesn't exist
-// (async function addIsActiveColumnIfNeeded() {
-//   let connection;
-//   try {
-//     connection = await pool.getConnection();
+(async function addIsActiveColumnIfNeeded() {
+  let connection;
+  try {
+    connection = await pool.getConnection();
     
-//     // Check if column exists
-//     const [columns] = await connection.query(`
-//       SELECT COLUMN_NAME 
-//       FROM INFORMATION_SCHEMA.COLUMNS 
-//       WHERE TABLE_SCHEMA = DATABASE() 
-//       AND TABLE_NAME = 'home_let_app_properties' 
-//       AND COLUMN_NAME = 'is_active'
-//     `);
+    // Check if column exists
+    const [columns] = await connection.query(`
+      SELECT COLUMN_NAME 
+      FROM INFORMATION_SCHEMA.COLUMNS 
+      WHERE TABLE_SCHEMA = DATABASE() 
+      AND TABLE_NAME = 'home_let_app_properties' 
+      AND COLUMN_NAME = 'is_active'
+    `);
     
-//     // If column doesn't exist, add it
-//     if (columns.length === 0) {
-//       await connection.query(`
-//         ALTER TABLE home_let_app_properties 
-//         ADD COLUMN is_active BOOLEAN DEFAULT TRUE
-//       `);
-//       console.log("Added is_active column to home_let_app_properties table");
-//     } else {
-//       console.log(" is_active column already exists in home_let_app_properties table");
-//     }
-//   } catch (error) {
-//     console.error(" Error checking/adding is_active column:", error);
-//   } finally {
-//     if (connection) connection.release();
-//   }
-// })();
+    // If column doesn't exist, add it
+    if (columns.length === 0) {
+      await connection.query(`
+        ALTER TABLE home_let_app_properties 
+        ADD COLUMN is_active BOOLEAN DEFAULT TRUE
+      `);
+      console.log("Added is_active column to home_let_app_properties table");
+    } else {
+      console.log(" is_active column already exists in home_let_app_properties table");
+    }
+  } catch (error) {
+    console.error(" Error checking/adding is_active column:", error);
+  } finally {
+    if (connection) connection.release();
+  }
+})();
 
 // Add is_read column to contact_messages table if it doesn't exist
 (async function addNotificationColumnsIfNeeded() {
@@ -2424,10 +2432,11 @@ app.get('/api/payments/check-status', verifyToken, async (req, res) => {
     handleDatabaseError(res, error, 'Failed to check payment status');
   }
 });
+// Add these new routes to your Express app
 
-// Create payment order - FIXED for high amounts
 app.post('/api/payments/create-order', verifyToken, async (req, res) => {
-  console.log(`Payment request received: Amount: ${req.body.amount}, PropertyID: ${req.body.propertyId}`);
+  console.log(`Public payment request received: Amount: ${req.body.amount}, PropertyID: ${req.body.propertyId}`);
+  console.log(`User making request: ${req.user.id || req.user.userId}`);
   
   try {
     if (!razorpay) {
@@ -2443,7 +2452,7 @@ app.post('/api/payments/create-order', verifyToken, async (req, res) => {
     const userId = req.user.id || req.user.userId;
 
     // Log incoming payment request details
-    console.log(`Processing payment: ${amount} ${currency} for property ${propertyId} by user ${userId}`);
+    console.log(`Processing public payment: ${amount} ${currency} for property ${propertyId} by user ${userId}`);
 
     // Input validation with better error messages
     if (!amount) {
@@ -2493,7 +2502,7 @@ app.post('/api/payments/create-order', verifyToken, async (req, res) => {
 
     const connection = await pool.getConnection();
     try {
-      // Property validation
+      // Property validation - only check if property exists, no ownership validation
       const [properties] = await connection.query(
         `SELECT * FROM home_let_app_properties WHERE id = ?`,
         [propertyId]
@@ -2502,50 +2511,40 @@ app.post('/api/payments/create-order', verifyToken, async (req, res) => {
       if (properties.length === 0) {
         return res.status(404).json({ success: false, message: 'Property not found' });
       }
-      
-      if (paymentType === 'listing' && properties[0].user_id != userId) {
-        return res.status(403).json({ 
-          success: false, 
-          message: 'You can only create payment orders for your own properties' 
-        });
-      }
-      
-      // Check if property is already paid for
-      if (paymentType === 'listing') {
-        const [payments] = await connection.query(
-          `SELECT * FROM home_let_app_payment_orders 
-           WHERE property_id = ? AND user_id = ? AND status = 'paid'
-           ORDER BY created_at DESC LIMIT 1`,
-          [propertyId, userId]
-        );
+
+      // Explicitly NOT checking ownership - any authenticated user can make payments
+
+      // Check for existing payments
+      const [payments] = await connection.query(
+        `SELECT * FROM home_let_app_payment_orders 
+         WHERE property_id = ? AND status = 'paid' 
+         ORDER BY created_at DESC LIMIT 1`,
+        [propertyId]
+      );
+
+      if (payments.length > 0) {
+        const payment = payments[0];
+        const diffDays = Math.ceil(Math.abs(new Date() - new Date(payment.created_at)) / (1000 * 60 * 60 * 24));
         
-        if (payments.length > 0) {
-          const payment = payments[0];
-          const diffDays = Math.ceil(Math.abs(new Date() - new Date(payment.created_at)) / (1000 * 60 * 60 * 24));
-          
-          if (diffDays <= 30) {
-            return res.status(400).json({
-              success: false,
-              message: 'Property already paid for',
-              paymentInfo: {
-                orderId: payment.order_id,
-                paymentId: payment.payment_id,
-                date: payment.created_at,
-                expiresIn: 30 - diffDays
-              }
-            });
-          }
+        if (diffDays <= 30) {
+          return res.status(400).json({
+            success: false,
+            message: 'Property already paid for',
+            paymentInfo: {
+              orderId: payment.order_id,
+              paymentId: payment.payment_id,
+              date: payment.created_at,
+              expiresIn: 30 - diffDays
+            }
+          });
         }
       }
     } finally {
       connection.release();
     }
 
-    // Try creating order with detailed error handling
+    // Create the Razorpay order
     try {
-      console.log("Razorpay instance:", razorpay ? "Available" : "Not available");
-      console.log("Razorpay Init Status:", razorpayInitStatus);
-
       console.log("Preparing Razorpay order creation");
       
       const options = {
@@ -2615,7 +2614,6 @@ app.post('/api/payments/create-order', verifyToken, async (req, res) => {
       let errorMessage = 'Payment processing error';
       let errorDetails = rzpError.message || 'Unknown error';
       
-      // Check for common Razorpay error patterns
       if (rzpError.error) {
         if (rzpError.error.code) {
           errorDetails = `Error code: ${rzpError.error.code}. ${rzpError.error.description || errorDetails}`;
@@ -2642,65 +2640,99 @@ app.post('/api/payments/create-order', verifyToken, async (req, res) => {
   }
 });
 
-// Verify payment
 app.post('/api/payments/verify-payment', verifyToken, async (req, res) => {
+  console.log('Public payment verification request received');
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, paymentType = 'listing', notes = '' } = req.body;
     const userId = req.user.id || req.user.userId;
-
+    
+    // Input validation
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-      return res.status(400).json({ success: false, message: 'Missing payment verification parameters' });
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required verification parameters'
+      });
     }
 
     const key_secret = process.env.RAZORPAY_KEY_SECRET;
     if (!key_secret) {
-      return res.status(500).json({ success: false, message: 'Payment verification unavailable' });
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Payment verification unavailable' 
+      });
     }
-
-    // Verify signature
-    const generatedSignature = crypto
-      .createHmac('sha256', key_secret)
-      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-      .digest('hex');
-
-    if (generatedSignature !== razorpay_signature) {
-      return res.status(400).json({ success: false, message: 'Invalid payment signature' });
+    
+    // Signature verification
+    const hmac = crypto.createHmac('sha256', key_secret);
+    hmac.update(`${razorpay_order_id}|${razorpay_payment_id}`);
+    const generatedSignature = hmac.digest('hex');
+    
+    const isSignatureValid = generatedSignature === razorpay_signature;
+    
+    if (!isSignatureValid) {
+      console.log('Payment signature verification failed');
+      return res.status(400).json({
+        success: false,
+        message: 'Payment signature verification failed'
+      });
     }
-
-    let propertyId = null, amount = null, currency = null;
+    
+    console.log('Payment signature verified successfully');
     
     const connection = await pool.getConnection();
     try {
-      const [orderRows] = await connection.query(
+      // Get the payment order from database
+      const [orders] = await connection.query(
         'SELECT * FROM home_let_app_payment_orders WHERE order_id = ?',
         [razorpay_order_id]
       );
       
-      if (orderRows.length === 0) {
-        return res.status(404).json({ success: false, message: 'Order not found' });
+      if (orders.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Order not found'
+        });
       }
       
-      const order = orderRows[0];
-
-      // User authorization
-      if (order.user_id != userId) {
-        return res.status(403).json({ success: false, message: 'Unauthorized payment verification attempt' });
-      }
+      const order = orders[0];
+      const propertyId = order.property_id;
+      const amount = order.amount;
+      const currency = order.currency;
       
-      propertyId = order.property_id;
-      amount = order.amount;
-      currency = order.currency;
-
-      // Update order status to 'paid'
+      // No ownership validation - any authenticated user can verify payment
+      
+      // Update order status
       await connection.query(
         `UPDATE home_let_app_payment_orders 
-         SET status = 'paid', payment_id = ?, updated_at = NOW()
+         SET status = 'paid', payment_id = ?, verified_at = NOW(), updated_at = NOW() 
          WHERE order_id = ?`,
         [razorpay_payment_id, razorpay_order_id]
       );
-
-      console.log(`Payment verified and updated for Order ID: ${razorpay_order_id}`);
-
+      
+      // Update property status if needed
+      if (paymentType === 'listing') {
+        await connection.query(
+          `UPDATE home_let_app_properties 
+           SET payment_status = 'paid', updated_at = NOW()
+           WHERE id = ?`,
+          [propertyId]
+        );
+      }
+      
+      // Record payment in transactions table if one exists
+      try {
+        await connection.query(
+          `INSERT INTO home_let_app_transactions
+           (user_id, property_id, payment_id, order_id, amount, status, created_at, type, notes)
+           VALUES (?, ?, ?, ?, ?, 'completed', NOW(), ?, ?)`,
+          [userId, propertyId, razorpay_payment_id, razorpay_order_id, amount, 
+           paymentType, notes || 'Payment verified successfully']
+        );
+      } catch (err) {
+        console.log('Could not record transaction, table might not exist:', err);
+        // This shouldn't fail the verification if the table doesn't exist
+      }
+      
       res.json({
         success: true,
         message: 'Payment verified successfully',
@@ -2712,17 +2744,18 @@ app.post('/api/payments/verify-payment', verifyToken, async (req, res) => {
           paymentId: razorpay_payment_id
         }
       });
-
     } finally {
       connection.release();
     }
-
   } catch (error) {
-    console.error("Payment verification error:", error);
-    return res.status(500).json({ success: false, message: 'Server error during payment verification', details: error.message });
+    console.error('Payment verification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error during payment verification',
+      details: error.message
+    });
   }
 });
-
 
 // Get payment history
 app.get('/api/payments/history', verifyToken, async (req, res) => {
@@ -2793,6 +2826,8 @@ app.get('/api/payments/property/:propertyId', verifyToken, async (req, res) => {
       `SELECT user_id FROM home_let_app_properties WHERE id = ?`,
       [propertyId]
     );
+    console.log('Fetched property:', properties[0]);
+
     
     if (properties.length === 0) {
       return res.status(404).json({ success: false, message: 'Property not found' });
