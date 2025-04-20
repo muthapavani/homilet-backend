@@ -85,8 +85,7 @@ const pool = mysql.createPool({
   enableKeepAlive: true,        // Keep connections alive
   keepAliveInitialDelay: 10000, // 10 seconds
   connectTimeout: 15000,        // 15 seconds connection timeout
-  acquireTimeout: 15000,        // 15 seconds acquire timeout
-  timeout: 15000                // 15 seconds query timeout
+
 });
 
 // Error Handling Utility
@@ -120,9 +119,9 @@ const handleDatabaseError = (res, error, defaultMessage = "An error occurred") =
           console.log("Adding additional profile columns to user1 table...");
           await connection.query(`
             ALTER TABLE user1
-            ADD COLUMN phone VARCHAR(20) DEFAULT NULL,
-            ADD COLUMN address TEXT DEFAULT NULL,
-            ADD COLUMN role ENUM('tenant', 'landlord') DEFAULT 'tenant'
+            ADD COLUMN  IF NOT EXISTS phone VARCHAR(20) DEFAULT NULL,
+            ADD COLUMN  IF NOT EXISTS address TEXT DEFAULT NULL,
+            ADD COLUMN  IF NOT EXISTS role ENUM('tenant', 'landlord') DEFAULT 'tenant'
           `);
           console.log(" Added profile columns to user1 table");
         } else {
@@ -137,8 +136,8 @@ const handleDatabaseError = (res, error, defaultMessage = "An error occurred") =
           console.log("Adding guest account columns to user1 table...");
           await connection.query(`
             ALTER TABLE user1
-            ADD COLUMN is_guest BOOLEAN DEFAULT FALSE,
-            ADD COLUMN guest_expiry_date DATETIME DEFAULT NULL
+            ADD COLUMN IF NOT EXISTS is_guest BOOLEAN DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS guest_expiry_date DATETIME DEFAULT NULL
           `);
           console.log(" Added guest account columns to user1 table");
         } else {
@@ -150,7 +149,7 @@ const handleDatabaseError = (res, error, defaultMessage = "An error occurred") =
       // Table doesn't exist, create it
       console.log("Creating user1 table...");
       await connection.query(`
-        CREATE TABLE user1 (
+        CREATE TABLE  IF NOT EXISTS  user1 (
           id INT AUTO_INCREMENT PRIMARY KEY,
           name VARCHAR(100) NOT NULL,
           email VARCHAR(100) NOT NULL UNIQUE,
@@ -181,8 +180,8 @@ const handleDatabaseError = (res, error, defaultMessage = "An error occurred") =
           console.log("Adding latitude and longitude columns to database...");
           await connection.query(`
             ALTER TABLE home_let_app_properties
-            ADD COLUMN latitude DECIMAL(10,8) DEFAULT NULL,
-            ADD COLUMN longitude DECIMAL(11,8) DEFAULT NULL
+            ADD COLUMN IF NOT EXISTS latitude DECIMAL(10,8) DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS longitude DECIMAL(11,8) DEFAULT NULL
           `);
           console.log(" Added latitude and longitude columns to database");
         } else {
@@ -193,7 +192,7 @@ const handleDatabaseError = (res, error, defaultMessage = "An error occurred") =
       // Table doesn't exist, create it
       console.log("Creating home_let_app_properties table...");
       await connection.query(`
-        CREATE TABLE home_let_app_properties (
+        CREATE TABLE  IF NOT EXISTS home_let_app_properties (
           id INT AUTO_INCREMENT PRIMARY KEY,
           user_id INT NOT NULL,
           title VARCHAR(255) NOT NULL,
@@ -230,7 +229,7 @@ const handleDatabaseError = (res, error, defaultMessage = "An error occurred") =
     } catch (error) {
       console.log("Creating contact_messages table...");
       await connection.query(`
-        CREATE TABLE contact_messages (
+        CREATE TABLE  IF NOT EXISTS  contact_messages (
           id INT AUTO_INCREMENT PRIMARY KEY,
           sender_id INT NOT NULL,
           receiver_id INT NOT NULL,
@@ -257,7 +256,7 @@ const handleDatabaseError = (res, error, defaultMessage = "An error occurred") =
       // Table doesn't exist, create it
       console.log("Creating payment_orders table...");
       await connection.query(`
-        CREATE TABLE home_let_app_payment_orders (
+        CREATE TABLE  IF NOT EXISTS   home_let_app_payment_orders (
           id INT AUTO_INCREMENT PRIMARY KEY,
           order_id VARCHAR(255) NOT NULL UNIQUE,
           property_id INT NOT NULL,
@@ -287,7 +286,7 @@ const handleDatabaseError = (res, error, defaultMessage = "An error occurred") =
     } catch (error) {
       console.log("Creating payment_history table...");
       await connection.query(`
-        CREATE TABLE home_let_app_payment_history (
+        CREATE TABLE  IF NOT EXISTS  home_let_app_payment_history (
           id INT AUTO_INCREMENT PRIMARY KEY,
           user_id INT NOT NULL,
           property_id INT NOT NULL,
@@ -310,7 +309,7 @@ const handleDatabaseError = (res, error, defaultMessage = "An error occurred") =
     
     // Try to setup scheduler for payment history cleanup
     try {
-      await connection.query(`SET GLOBAL event_scheduler = ON`);
+     
       await connection.query(`
         CREATE EVENT IF NOT EXISTS clear_old_homelet_payment_history
         ON SCHEDULE EVERY 1 DAY
@@ -1498,37 +1497,37 @@ app.use((err, req, res, next) => {
     console.error(" Email configuration error:", error);
   }
 })();
-// Add is_active column to properties table if it doesn't exist
-(async function addIsActiveColumnIfNeeded() {
-  let connection;
-  try {
-    connection = await pool.getConnection();
+// // Add is_active column to properties table if it doesn't exist
+// (async function addIsActiveColumnIfNeeded() {
+//   let connection;
+//   try {
+//     connection = await pool.getConnection();
     
-    // Check if column exists
-    const [columns] = await connection.query(`
-      SELECT COLUMN_NAME 
-      FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = DATABASE() 
-      AND TABLE_NAME = 'home_let_app_properties' 
-      AND COLUMN_NAME = 'is_active'
-    `);
+//     // Check if column exists
+//     const [columns] = await connection.query(`
+//       SELECT COLUMN_NAME 
+//       FROM INFORMATION_SCHEMA.COLUMNS 
+//       WHERE TABLE_SCHEMA = DATABASE() 
+//       AND TABLE_NAME = 'home_let_app_properties' 
+//       AND COLUMN_NAME = 'is_active'
+//     `);
     
-    // If column doesn't exist, add it
-    if (columns.length === 0) {
-      await connection.query(`
-        ALTER TABLE home_let_app_properties 
-        ADD COLUMN is_active BOOLEAN DEFAULT TRUE
-      `);
-      console.log("Added is_active column to home_let_app_properties table");
-    } else {
-      console.log(" is_active column already exists in home_let_app_properties table");
-    }
-  } catch (error) {
-    console.error(" Error checking/adding is_active column:", error);
-  } finally {
-    if (connection) connection.release();
-  }
-})();
+//     // If column doesn't exist, add it
+//     if (columns.length === 0) {
+//       await connection.query(`
+//         ALTER TABLE home_let_app_properties 
+//         ADD COLUMN is_active BOOLEAN DEFAULT TRUE
+//       `);
+//       console.log("Added is_active column to home_let_app_properties table");
+//     } else {
+//       console.log(" is_active column already exists in home_let_app_properties table");
+//     }
+//   } catch (error) {
+//     console.error(" Error checking/adding is_active column:", error);
+//   } finally {
+//     if (connection) connection.release();
+//   }
+// })();
 
 // Add is_read column to contact_messages table if it doesn't exist
 (async function addNotificationColumnsIfNeeded() {
@@ -2290,6 +2289,7 @@ app.patch("/api/notifications/status/:notificationId", verifyToken, async (req, 
     return res.status(500).json({ message: "Failed to update inquiry status" });
   }
 });
+
 // Initialize Razorpay
 let razorpay;
 let razorpayInitStatus = '';
@@ -2298,8 +2298,8 @@ let razorpayInitStatus = '';
 const MAX_AMOUNT_RAZORPAY = 5000000 * 100; // ₹5,000,000 in paise
 
 try {
-  const key_id = process.env.RAZORPAY_KEY_ID;
-  const key_secret = process.env.RAZORPAY_KEY_SECRET;
+  const key_id = "rzp_test_Fqrbpr6LU7Ka8y"|| process.env.RAZORPAY_KEY_ID;
+  const key_secret = "T49N5T2Y1bxtLpfupkFsyiDX"||process.env.RAZORPAY_KEY_SECRET;
   
   if (!key_id || !key_secret) {
     razorpayInitStatus = 'Missing credentials';
@@ -2543,6 +2543,9 @@ app.post('/api/payments/create-order', verifyToken, async (req, res) => {
 
     // Try creating order with detailed error handling
     try {
+      console.log("Razorpay instance:", razorpay ? "Available" : "Not available");
+      console.log("Razorpay Init Status:", razorpayInitStatus);
+
       console.log("Preparing Razorpay order creation");
       
       const options = {
@@ -2654,6 +2657,7 @@ app.post('/api/payments/verify-payment', verifyToken, async (req, res) => {
       return res.status(500).json({ success: false, message: 'Payment verification unavailable' });
     }
 
+    // Verify signature
     const generatedSignature = crypto
       .createHmac('sha256', key_secret)
       .update(`${razorpay_order_id}|${razorpay_payment_id}`)
@@ -2676,54 +2680,49 @@ app.post('/api/payments/verify-payment', verifyToken, async (req, res) => {
         return res.status(404).json({ success: false, message: 'Order not found' });
       }
       
-      propertyId = orderRows[0].property_id;
-      amount = orderRows[0].amount;
-      currency = orderRows[0].currency;
-      
-      if (orderRows[0].user_id != userId) {
+      const order = orderRows[0];
+
+      // User authorization
+      if (order.user_id != userId) {
         return res.status(403).json({ success: false, message: 'Unauthorized payment verification attempt' });
       }
       
+      propertyId = order.property_id;
+      amount = order.amount;
+      currency = order.currency;
+
+      // Update order status to 'paid'
       await connection.query(
         `UPDATE home_let_app_payment_orders 
-         SET status = 'paid', payment_id = ?, updated_at = NOW() 
+         SET status = 'paid', payment_id = ?, updated_at = NOW()
          WHERE order_id = ?`,
         [razorpay_payment_id, razorpay_order_id]
       );
-      
-      await connection.query(
-        `INSERT INTO home_let_app_payment_history 
-         (user_id, property_id, order_id, payment_id, amount, currency, payment_type, notes, created_at) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-        [userId, propertyId, razorpay_order_id, razorpay_payment_id, amount, currency, paymentType, notes]
-      );
-      
-      if (paymentType === 'listing') {
-        await connection.query(
-          `UPDATE home_let_app_properties SET status = 'active' WHERE id = ?`,
-          [propertyId]
-        );
-      }
+
+      console.log(`Payment verified and updated for Order ID: ${razorpay_order_id}`);
+
+      res.json({
+        success: true,
+        message: 'Payment verified successfully',
+        paymentInfo: {
+          propertyId,
+          amount,
+          currency,
+          orderId: razorpay_order_id,
+          paymentId: razorpay_payment_id
+        }
+      });
+
     } finally {
       connection.release();
     }
 
-    res.json({
-      success: true,
-      message: 'Payment verified successfully',
-      paymentInfo: {
-        orderId: razorpay_order_id,
-        paymentId: razorpay_payment_id,
-        propertyId,
-        amount,
-        currency,
-        paymentType
-      }
-    });
   } catch (error) {
-    handleDatabaseError(res, error, 'Could not verify payment');
+    console.error("Payment verification error:", error);
+    return res.status(500).json({ success: false, message: 'Server error during payment verification', details: error.message });
   }
 });
+
 
 // Get payment history
 app.get('/api/payments/history', verifyToken, async (req, res) => {
