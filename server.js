@@ -2640,6 +2640,8 @@ app.post('/api/payments/create-order', verifyToken, async (req, res) => {
 });
 
 app.post('/api/payments/verify-payment', verifyToken, async (req, res) => {
+  console.log('Loaded Razorpay Key:', process.env.RAZORPAY_KEY_ID);
+  console.log('Loaded Razorpay Secret:', process.env.RAZORPAY_KEY_SECRET);
   console.log('Public payment verification request received');
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, paymentType = 'listing', notes = '' } = req.body;
@@ -2706,7 +2708,7 @@ app.post('/api/payments/verify-payment', verifyToken, async (req, res) => {
          SET status = 'paid', payment_id = ?, verified_at = NOW(), updated_at = NOW() 
          WHERE order_id = ?`,
         [razorpay_payment_id, razorpay_order_id]
-      );
+      );b
       
       // Update property status if needed
       if (paymentType === 'listing') {
