@@ -2297,13 +2297,12 @@ app.patch("/api/notifications/status/:notificationId", verifyToken, async (req, 
     return res.status(500).json({ message: "Failed to update inquiry status" });
   }
 });
-
 // Initialize Razorpay
 let razorpay;
 let razorpayInitStatus = '';
 
 // Set maximum payment amount (Razorpay's limit)
-const MAX_AMOUNT_RAZORPAY = 500000000 * 100; // ₹5,000,00000 in paise
+const MAX_AMOUNT_RAZORPAY = 5000000 * 100; // ₹5,000,000 in paise
 
 try {
   const key_id = "rzp_test_Fqrbpr6LU7Ka8y"|| process.env.RAZORPAY_KEY_ID;
@@ -2376,83 +2375,29 @@ app.get('/api/payments/test-razorpay', async (req, res) => {
     res.status(500).json(response);
   }
 });
-// Update the check-status endpoint to check if property is sold by another user
-app.get('/api/payments/check-status', async (req, res) => {
+
+// Check payment status
+app.get('/api/payments/check-status', verifyToken, async (req, res) => {
   try {
-    const { propertyId, publicCheck } = req.query;
-    const userId = publicCheck ? null : (req.user?.id || req.user?.userId);
+    const { propertyId } = req.query;
+    const userId = req.user.id || req.user.userId;
     
     if (!propertyId) return res.status(400).json({ success: false, message: 'Missing property ID' });
 
     const connection = await pool.getConnection();
     try {
-      // First check if property exists
-      const [properties] = await connection.query(
-        `SELECT * FROM home_let_app_properties WHERE id = ?`,
-        [propertyId]
-      );
-      
-      if (properties.length === 0) {
-        return res.status(404).json({ success: false, message: 'Property not found' });
-      }
-      
-      // Find the most recent payment for this property from any user
-      const [latestPayments] = await connection.query(
-        `SELECT * FROM home_let_app_payment_orders 
-         WHERE property_id = ? AND status = 'paid'
-         ORDER BY created_at DESC LIMIT 1`,
-        [propertyId]
-      );
-      
-      // Check if property is sold to another user
-      let soldByAnotherUser = false;
-      
-      if (latestPayments.length > 0) {
-        const payment = latestPayments[0];
-        const paymentDate = new Date(payment.created_at);
-        const diffDays = Math.ceil(Math.abs(new Date() - paymentDate) / (1000 * 60 * 60 * 24));
-        
-        // If payment is still valid (within 30 days) and not by current user
-        if (diffDays <= 30 && userId && payment.user_id != userId) {
-          soldByAnotherUser = true;
-          
-          return res.json({
-            success: true,
-            isPaid: false,
-            paymentStatus: 'unpaid',
-            soldByAnotherUser: true
-          });
-        }
-      }
-      
-      // If we're doing a public check only, we stop here after checking if sold by another user
-      if (publicCheck === 'true' || !userId) {
-        return res.json({
-          success: true,
-          isPaid: false,
-          paymentStatus: 'unpaid',
-          soldByAnotherUser: soldByAnotherUser
-        });
-      }
-      
-      // For logged in users, check if they have paid for this property
-      const [userPayments] = await connection.query(
+      const [payments] = await connection.query(
         `SELECT * FROM home_let_app_payment_orders 
          WHERE property_id = ? AND user_id = ? AND status = 'paid'
          ORDER BY created_at DESC LIMIT 1`,
         [propertyId, userId]
       );
       
-      if (userPayments.length === 0) {
-        return res.json({ 
-          success: true, 
-          isPaid: false, 
-          paymentStatus: 'unpaid',
-          soldByAnotherUser: soldByAnotherUser 
-        });
+      if (payments.length === 0) {
+        return res.json({ success: true, isPaid: false, paymentStatus: 'unpaid' });
       }
       
-      const payment = userPayments[0];
+      const payment = payments[0];
       const paymentDate = new Date(payment.created_at);
       const diffDays = Math.ceil(Math.abs(new Date() - paymentDate) / (1000 * 60 * 60 * 24));
       
@@ -2462,8 +2407,7 @@ app.get('/api/payments/check-status', async (req, res) => {
           isPaid: false,
           paymentStatus: 'expired',
           lastPaymentDate: paymentDate,
-          daysSincePayment: diffDays,
-          soldByAnotherUser: soldByAnotherUser
+          daysSincePayment: diffDays
         });
       }
       
@@ -2478,25 +2422,19 @@ app.get('/api/payments/check-status', async (req, res) => {
           currency: payment.currency,
           date: payment.created_at,
           expiresIn: 30 - diffDays
-        },
-        soldByAnotherUser: soldByAnotherUser
+        }
       });
     } finally {
       connection.release();
     }
   } catch (error) {
-    console.error('Failed to check payment status:', error);
-    res.status(500).json({
-      success: false, 
-      message: 'Server error checking payment status', 
-      details: error.message
-    });
+    handleDatabaseError(res, error, 'Failed to check payment status');
   }
 });
+// Add these new routes to your Express app
 
-// Update the create-order endpoint to prevent payment if property is sold
 app.post('/api/payments/create-order', verifyToken, async (req, res) => {
-  console.log(`Payment request received: Amount: ${req.body.amount}, PropertyID: ${req.body.propertyId}`);
+  console.log(`Public payment request received: Amount: ${req.body.amount}, PropertyID: ${req.body.propertyId}`);
   console.log(`User making request: ${req.user.id || req.user.userId}`);
   
   try {
@@ -2513,7 +2451,7 @@ app.post('/api/payments/create-order', verifyToken, async (req, res) => {
     const userId = req.user.id || req.user.userId;
 
     // Log incoming payment request details
-    console.log(`Processing payment: ${amount} ${currency} for property ${propertyId} by user ${userId}`);
+    console.log(`Processing public payment: ${amount} ${currency} for property ${propertyId} by user ${userId}`);
 
     // Input validation with better error messages
     if (!amount) {
@@ -2563,7 +2501,7 @@ app.post('/api/payments/create-order', verifyToken, async (req, res) => {
 
     const connection = await pool.getConnection();
     try {
-      // Property validation - only check if property exists
+      // Property validation - only check if property exists, no ownership validation
       const [properties] = await connection.query(
         `SELECT * FROM home_let_app_properties WHERE id = ?`,
         [propertyId]
@@ -2573,7 +2511,9 @@ app.post('/api/payments/create-order', verifyToken, async (req, res) => {
         return res.status(404).json({ success: false, message: 'Property not found' });
       }
 
-      // Check for existing payments from any user
+      // Explicitly NOT checking ownership - any authenticated user can make payments
+
+      // Check for existing payments
       const [payments] = await connection.query(
         `SELECT * FROM home_let_app_payment_orders 
          WHERE property_id = ? AND status = 'paid' 
@@ -2583,21 +2523,9 @@ app.post('/api/payments/create-order', verifyToken, async (req, res) => {
 
       if (payments.length > 0) {
         const payment = payments[0];
-        const payingUserId = payment.user_id;
         const diffDays = Math.ceil(Math.abs(new Date() - new Date(payment.created_at)) / (1000 * 60 * 60 * 24));
         
-        // If payment is still valid (within 30 days)
         if (diffDays <= 30) {
-          // Check if payment was made by another user
-          if (payingUserId != userId) {
-            return res.status(400).json({
-              success: false,
-              message: 'This property has already been sold to another user',
-              soldByAnotherUser: true
-            });
-          }
-          
-          // If payment was made by current user
           return res.status(400).json({
             success: false,
             message: 'Property already paid for',
@@ -2706,82 +2634,6 @@ app.post('/api/payments/create-order', verifyToken, async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Server error processing payment',
-      details: error.message
-    });
-  }
-});
-
-// Update public property status endpoint to be consistent with the check-status endpoint
-app.get('/api/public/property-status', async (req, res) => {
-  try {
-    const { propertyId } = req.query;
-    
-    if (!propertyId) {
-      return res.status(400).json({ success: false, message: 'Missing property ID' });
-    }
-    
-    console.log(`Public property status check for propertyId: ${propertyId}`);
-    
-    const connection = await pool.getConnection();
-    try {
-      // First check if property exists
-      const [properties] = await connection.query(
-        `SELECT * FROM home_let_app_properties WHERE id = ?`,
-        [propertyId]
-      );
-      
-      if (properties.length === 0) {
-        console.log(`Property ${propertyId} not found`);
-        return res.status(404).json({ success: false, message: 'Property not found' });
-      }
-      
-      // Find the most recent payment for this property
-      const [payments] = await connection.query(
-        `SELECT * FROM home_let_app_payment_orders 
-         WHERE property_id = ? AND status = 'paid'
-         ORDER BY created_at DESC LIMIT 1`,
-        [propertyId]
-      );
-      
-      if (payments.length === 0) {
-        console.log(`No payments found for property ${propertyId}`);
-        return res.json({ 
-          success: true, 
-          isSold: false, 
-          soldByAnotherUser: false 
-        });
-      }
-      
-      const payment = payments[0];
-      const paymentDate = new Date(payment.created_at);
-      const diffDays = Math.ceil(Math.abs(new Date() - paymentDate) / (1000 * 60 * 60 * 24));
-      
-      // If payment is still valid (within 30 days)
-      if (diffDays <= 30) {
-        console.log(`Property ${propertyId} is sold, payment valid for ${30 - diffDays} more days`);
-        return res.json({
-          success: true,
-          isSold: true,
-          soldByAnotherUser: true,  // From public endpoint perspective, property is always sold by "another" user
-          paymentDate: payment.created_at,
-          daysRemaining: 30 - diffDays
-        });
-      }
-      
-      console.log(`Property ${propertyId} has expired payment, not considered sold`);
-      return res.json({ 
-        success: true, 
-        isSold: false, 
-        soldByAnotherUser: false 
-      });
-    } finally {
-      connection.release();
-    }
-  } catch (error) {
-    console.error('Error checking property status:', error);
-    res.status(500).json({
-      success: false, 
-      message: 'Server error checking property status', 
       details: error.message
     });
   }
@@ -2903,7 +2755,6 @@ app.post('/api/payments/verify-payment', verifyToken, async (req, res) => {
     });
   }
 });
-
 // Get payment history
 app.get('/api/payments/history', verifyToken, async (req, res) => {
   let connection;
