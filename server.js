@@ -3111,6 +3111,95 @@ app.post('/api/payments/basic-history-insert', verifyToken, async (req, res) => 
   }
 });
 
+// Get payment history for the logged-in user
+app.get('/api/payments/history', verifyToken, async (req, res) => {
+  let connection;
+  try {
+    const userId = req.user.id || req.user.userId;
+    
+    connection = await pool.getConnection();
+    
+    // Fetch payment history along with property information
+    const [payments] = await connection.query(`
+      SELECT 
+        ph.id,
+        ph.property_id,
+        ph.payment_id,
+        ph.order_id,
+        ph.amount,
+        ph.currency,
+        ph.payment_type,
+        ph.created_at,
+        p.title AS property_title,
+        p.address AS property_address
+      FROM home_let_app_payment_history ph
+      LEFT JOIN properties p ON ph.property_id = p.id
+      WHERE ph.user_id = ?
+      ORDER BY ph.created_at DESC
+    `, [userId]);
+    
+    res.json({
+      success: true,
+      history: payments
+    });
+  } catch (error) {
+    console.error('Error fetching payment history:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch payment history',
+      error: error.message
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// Test database connection
+app.get('/api/payments/test-db', verifyToken, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    
+    // Check if the table exists
+    const [tables] = await connection.query(`
+      SELECT TABLE_NAME 
+      FROM information_schema.TABLES 
+      WHERE TABLE_SCHEMA = DATABASE() 
+      AND TABLE_NAME = 'home_let_app_payment_history'
+    `);
+    
+    const tableExists = tables.length > 0;
+    
+    // Count records if table exists
+    let recordCount = 0;
+    if (tableExists) {
+      const userId = req.user.id || req.user.userId;
+      const [countResult] = await connection.query(
+        'SELECT COUNT(*) as count FROM home_let_app_payment_history WHERE user_id = ?',
+        [userId]
+      );
+      recordCount = countResult[0].count;
+    }
+    
+    res.json({
+      success: true,
+      database: {
+        connected: true,
+        tableExists,
+        recordCount
+      }
+    });
+  } catch (error) {
+    console.error('Database test error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Database connection test failed',
+      error: error.message
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+});
 // Start Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
