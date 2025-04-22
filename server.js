@@ -2297,6 +2297,7 @@ app.patch("/api/notifications/status/:notificationId", verifyToken, async (req, 
     return res.status(500).json({ message: "Failed to update inquiry status" });
   }
 });
+
 // Initialize Razorpay
 let razorpay;
 let razorpayInitStatus = '';
@@ -2394,7 +2395,8 @@ app.get('/api/payments/check-status', verifyToken, async (req, res) => {
       );
       
       if (payments.length === 0) {
-        return res.json({ success: true, isPaid: false, paymentStatus: 'unpaid' });
+        return res.json({ success: true, status: 'unpaid',
+          details: { isSoldOut: false }});
       }
       
       const payment = payments[0];
@@ -2404,24 +2406,26 @@ app.get('/api/payments/check-status', verifyToken, async (req, res) => {
       if (diffDays > 30) {
         return res.json({
           success: true,
-          isPaid: false,
-          paymentStatus: 'expired',
-          lastPaymentDate: paymentDate,
-          daysSincePayment: diffDays
+          status: 'expired',
+          details: {
+            isSoldOut: false,
+            daysSincePayment: diffDays
+          }
         });
       }
       
       return res.json({
         success: true,
-        isPaid: true,
-        paymentStatus: 'paid',
-        paymentInfo: {
+        status: 'paid',
+        details: {
           orderId: payment.order_id,
           paymentId: payment.payment_id,
           amount: payment.amount,
           currency: payment.currency,
           date: payment.created_at,
-          expiresIn: 30 - diffDays
+          expiresIn: 30 - diffDays,
+          user:payment.user_id,
+          isSoldOut: true
         }
       });
     } finally {
@@ -2431,6 +2435,7 @@ app.get('/api/payments/check-status', verifyToken, async (req, res) => {
     handleDatabaseError(res, error, 'Failed to check payment status');
   }
 });
+
 // Add these new routes to your Express app
 
 app.post('/api/payments/create-order', verifyToken, async (req, res) => {
@@ -2639,10 +2644,9 @@ app.post('/api/payments/create-order', verifyToken, async (req, res) => {
   }
 });
 
+// Modified payment verification endpoint with guaranteed history insertion
 app.post('/api/payments/verify-payment', verifyToken, async (req, res) => {
-  console.log('Loaded Razorpay Key:', process.env.RAZORPAY_KEY_ID);
-  console.log('Loaded Razorpay Secret:', process.env.RAZORPAY_KEY_SECRET);
-  console.log('Public payment verification request received');
+  console.log('Payment verification request received');
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, paymentType = 'listing', notes = '' } = req.body;
     const userId = req.user.id || req.user.userId;
@@ -2680,8 +2684,32 @@ app.post('/api/payments/verify-payment', verifyToken, async (req, res) => {
     
     console.log('Payment signature verified successfully');
     
-    const connection = await pool.getConnection();
+    let connection;
+    let historyInserted = false;
+    let historyId = null;
+    
     try {
+      connection = await pool.getConnection();
+      
+      // First, make sure the history table exists
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS home_let_app_payment_history (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          property_id INT NOT NULL,
+          order_id VARCHAR(255) NOT NULL,
+          payment_id VARCHAR(255) NOT NULL,
+          amount DECIMAL(10,2) NOT NULL,
+          currency VARCHAR(10) NOT NULL DEFAULT 'INR',
+          payment_type ENUM('listing', 'rent', 'deposit', 'other') DEFAULT 'listing',
+          notes TEXT,
+          created_at DATETIME NOT NULL,
+          INDEX idx_user_id (user_id),
+          INDEX idx_property_id (property_id),
+          INDEX idx_created_at (created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+      
       // Get the payment order from database
       const [orders] = await connection.query(
         'SELECT * FROM home_let_app_payment_orders WHERE order_id = ?',
@@ -2698,9 +2726,7 @@ app.post('/api/payments/verify-payment', verifyToken, async (req, res) => {
       const order = orders[0];
       const propertyId = order.property_id;
       const amount = order.amount;
-      const currency = order.currency;
-      
-      // No ownership validation - any authenticated user can verify payment
+      const currency = order.currency || 'INR';
       
       // Update order status
       await connection.query(
@@ -2720,23 +2746,100 @@ app.post('/api/payments/verify-payment', verifyToken, async (req, res) => {
         );
       }
       
-      // Record payment in transactions table if one exists
-      try {
-        await connection.query(
-          `INSERT INTO home_let_app_transactions
-           (user_id, property_id, payment_id, order_id, amount, status, created_at, type, notes)
-           VALUES (?, ?, ?, ?, ?, 'completed', NOW(), ?, ?)`,
-          [userId, propertyId, razorpay_payment_id, razorpay_order_id, amount, 
-           paymentType, notes || 'Payment verified successfully']
-        );
-      } catch (err) {
-        console.log('Could not record transaction, table might not exist:', err);
-        // This shouldn't fail the verification if the table doesn't exist
-      }
+      // START: CRITICAL PAYMENT HISTORY INSERTION
+      console.log('Inserting payment history record...');
       
+      // Normalize and validate values
+      const userIdNum = parseInt(userId, 10) || 0;
+      const propertyIdNum = parseInt(propertyId, 10) || 0;
+      const amountNum = parseFloat(amount) || 0;
+      const safePaymentType = ['listing', 'rent', 'deposit', 'other'].includes(paymentType) ? paymentType : 'listing';
+      const safeNotes = notes ? notes.substring(0, 1000) : 'Payment verified successfully';
+      const safeCurrency = currency || 'INR';
+      
+      console.log('Payment history parameters:', {
+        userIdNum, propertyIdNum, razorpay_order_id, razorpay_payment_id, 
+        amountNum, safeCurrency, safePaymentType, safeNotes
+      });
+      
+      // First check if this payment is already recorded
+      const [existingHistory] = await connection.query(
+        'SELECT id FROM home_let_app_payment_history WHERE order_id = ? AND payment_id = ?',
+        [razorpay_order_id, razorpay_payment_id]
+      );
+      
+      if (existingHistory.length > 0) {
+        console.log(`Payment history already exists with ID: ${existingHistory[0].id}`);
+        historyInserted = true;
+        historyId = existingHistory[0].id;
+      } else {
+        // Direct insert with transaction to ensure it completes
+        await connection.beginTransaction();
+        
+        try {
+          const [insertResult] = await connection.query(
+            `INSERT INTO home_let_app_payment_history
+             (user_id, property_id, order_id, payment_id, amount, currency, payment_type, notes, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+            [userIdNum, propertyIdNum, razorpay_order_id, razorpay_payment_id, 
+             amountNum, safeCurrency, safePaymentType, safeNotes]
+          );
+          
+          await connection.commit();
+          historyInserted = true;
+          historyId = insertResult.insertId;
+          console.log(`Payment history inserted successfully. ID: ${historyId}`);
+        } catch (insertError) {
+          await connection.rollback();
+          console.error('Primary insert failed:', insertError);
+          
+          // FALLBACK METHOD #1: Try with minimal fields
+          try {
+            await connection.beginTransaction();
+            const [fallbackResult] = await connection.query(
+              `INSERT INTO home_let_app_payment_history
+               (user_id, property_id, order_id, payment_id, amount, currency, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+              [userIdNum, propertyIdNum, razorpay_order_id, razorpay_payment_id, amountNum, safeCurrency]
+            );
+            
+            await connection.commit();
+            historyInserted = true;
+            historyId = fallbackResult.insertId;
+            console.log(`Fallback payment history inserted. ID: ${historyId}`);
+          } catch (fallbackError) {
+            await connection.rollback();
+            console.error('Fallback insert also failed:', fallbackError);
+              
+            // FALLBACK METHOD #2: Last resort with hardcoded values for non-essential fields
+            try {
+              await connection.beginTransaction();
+              const [lastResortResult] = await connection.query(
+                `INSERT INTO home_let_app_payment_history
+                 (user_id, property_id, order_id, payment_id, amount, currency, payment_type, notes, created_at)
+                 VALUES (?, ?, ?, ?, ?, 'INR', 'listing', 'Emergency recorded payment', NOW())`,
+                [userIdNum, propertyIdNum, razorpay_order_id, razorpay_payment_id, amountNum]
+              );
+              
+              await connection.commit();
+              historyInserted = true;
+              historyId = lastResortResult.insertId;
+              console.log(`Emergency payment history recorded. ID: ${historyId}`);
+            } catch (emergencyError) {
+              await connection.rollback();
+              console.error('All insert methods failed:', emergencyError);
+            }
+          }
+        }
+      }
+      // END: CRITICAL PAYMENT HISTORY INSERTION
+      
+      // Return response with history status
       res.json({
         success: true,
         message: 'Payment verified successfully',
+        historyRecorded: historyInserted,
+        historyId: historyId,
         paymentInfo: {
           propertyId,
           amount,
@@ -2745,138 +2848,264 @@ app.post('/api/payments/verify-payment', verifyToken, async (req, res) => {
           paymentId: razorpay_payment_id
         }
       });
+    } catch (error) {
+      console.error('Payment processing error:', error);
+      
+      // Even if other operations fail, try one last time to record the payment
+      if (!historyInserted && connection) {
+        try {
+          console.log('Final attempt to record payment history');
+          const [finalAttempt] = await connection.query(
+            `INSERT INTO home_let_app_payment_history
+             (user_id, property_id, order_id, payment_id, amount, currency, notes, created_at)
+             VALUES (?, ?, ?, ?, 0.00, 'INR', 'Recovery recorded payment', NOW())`,
+            [parseInt(userId, 10) || 0, 1, razorpay_order_id, razorpay_payment_id]
+          );
+          
+          historyInserted = true;
+          historyId = finalAttempt.insertId;
+          console.log(`Recovery payment history recorded. ID: ${historyId}`);
+        } catch (finalError) {
+          console.error('Final history insert attempt failed:', finalError);
+        }
+      }
+      
+      res.status(500).json({
+        success: false,
+        message: 'Server error during payment verification',
+        historyRecorded: historyInserted,
+        historyId: historyId,
+        details: error.message
+      });
     } finally {
-      connection.release();
+      if (connection) connection.release();
     }
   } catch (error) {
-    console.error('Payment verification error:', error);
+    console.error('Payment verification critical error:', error);
     res.status(500).json({
       success: false,
-      message: 'Server error during payment verification',
+      message: 'Critical error during payment verification',
       details: error.message
     });
   }
 });
-// Get payment history
-app.get('/api/payments/history', verifyToken, async (req, res) => {
-  let connection;
-  try {
-    const userId = req.user.id || req.user.userId;
-    
-    if (!userId) {
-      return res.status(400).json({ success: false, message: 'User ID missing in token' });
-    }
-    
-    connection = await pool.getConnection();
-    
-    const query = `
-      SELECT 
-        ph.*, 
-        po.status, 
-        p.title as property_title, 
-        p.address as property_address,
-        p.city as property_city,
-        p.images as property_images
-      FROM home_let_app_payment_history ph
-      LEFT JOIN home_let_app_payment_orders po ON ph.order_id = po.order_id
-      LEFT JOIN home_let_app_properties p ON ph.property_id = p.id
-      WHERE ph.user_id = ?
-      ORDER BY ph.created_at DESC
-      LIMIT 100
-    `;
-    
-    const [history] = await connection.query(query, [userId]);
-    
-    const processedHistory = history.map(record => {
-      if (record.property_images) {
-        try {
-          const images = typeof record.property_images === 'string' 
-            ? JSON.parse(record.property_images) 
-            : record.property_images;
-          record.property_thumbnail = images && images.length > 0 ? images[0] : null;
-        } catch (e) {
-          record.property_thumbnail = null;
-        }
-      }
-      return record;
-    });
-    
-    return res.json({ success: true, history: processedHistory });
-  } catch (error) {
-    handleDatabaseError(res, error, 'Error fetching payment history');
-  } finally {
-    if (connection) connection.release();
-  }
-});
 
-// Get property payments
-app.get('/api/payments/property/:propertyId', verifyToken, async (req, res) => {
+// Standalone endpoint to ensure payment history is recorded
+app.post('/api/payments/ensure-history-record', verifyToken, async (req, res) => {
   let connection;
   try {
-    const { propertyId } = req.params;
+    const { 
+      propertyId, 
+      orderId, 
+      paymentId, 
+      amount, 
+      currency = 'INR', 
+      paymentType = 'listing', 
+      notes = 'Payment record' 
+    } = req.body;
+    
     const userId = req.user.id || req.user.userId;
     
-    if (!propertyId) {
-      return res.status(400).json({ success: false, message: 'Missing property ID' });
+    // Validate required fields
+    if (!propertyId || !orderId || !paymentId || !amount) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: propertyId, orderId, paymentId, and amount are required'
+      });
     }
     
     connection = await pool.getConnection();
     
-    const [properties] = await connection.query(
-      `SELECT user_id FROM home_let_app_properties WHERE id = ?`,
-      [propertyId]
+    // Ensure table exists
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS home_let_app_payment_history (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        property_id INT NOT NULL,
+        order_id VARCHAR(255) NOT NULL,
+        payment_id VARCHAR(255) NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        currency VARCHAR(10) NOT NULL DEFAULT 'INR',
+        payment_type ENUM('listing', 'rent', 'deposit', 'other') DEFAULT 'listing',
+        notes TEXT,
+        created_at DATETIME NOT NULL,
+        INDEX idx_user_id (user_id),
+        INDEX idx_property_id (property_id),
+        INDEX idx_created_at (created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+    
+    // Check if record already exists
+    const [existingRecord] = await connection.query(
+      'SELECT id FROM home_let_app_payment_history WHERE order_id = ? AND payment_id = ?',
+      [orderId, paymentId]
     );
-    console.log('Fetched property:', properties[0]);
-
     
-    if (properties.length === 0) {
-      return res.status(404).json({ success: false, message: 'Property not found' });
+    if (existingRecord.length > 0) {
+      return res.json({
+        success: true,
+        message: 'Payment history record already exists',
+        historyId: existingRecord[0].id,
+        isNewRecord: false
+      });
     }
     
-    const isOwner = properties[0].user_id == userId;
+    // Convert values to appropriate types
+    const userIdNum = parseInt(userId, 10) || 0;
+    const propertyIdNum = parseInt(propertyId, 10) || 0;
+    const amountNum = parseFloat(amount) || 0;
     
-    let query, params;
+    // Insert record with transaction
+    await connection.beginTransaction();
     
-    if (isOwner) {
-      query = `
-        SELECT 
-          ph.*,
-          u.name as user_name,
-          u.email as user_email
-        FROM home_let_app_payment_history ph
-        LEFT JOIN user1 u ON ph.user_id = u.id
-        WHERE ph.property_id = ?
-        ORDER BY ph.created_at DESC
-      `;
-      params = [propertyId];
-    } else {
-      query = `
-        SELECT ph.*
-        FROM home_let_app_payment_history ph
-        WHERE ph.property_id = ? AND ph.user_id = ?
-        ORDER BY ph.created_at DESC
-      `;
-      params = [propertyId, userId];
+    try {
+      const [result] = await connection.query(
+        `INSERT INTO home_let_app_payment_history
+         (user_id, property_id, order_id, payment_id, amount, currency, payment_type, notes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        [userIdNum, propertyIdNum, orderId, paymentId, amountNum, currency, paymentType, notes]
+      );
+      
+      await connection.commit();
+      
+      res.json({
+        success: true,
+        message: 'Payment history record inserted successfully',
+        historyId: result.insertId,
+        isNewRecord: true
+      });
+    } catch (error) {
+      await connection.rollback();
+      
+      // Try simplified insert as fallback
+      try {
+        await connection.beginTransaction();
+       
+        
+        const [fallbackResult] = await connection.query(
+          `INSERT INTO home_let_app_payment_history
+           (user_id, property_id, order_id, payment_id, amount, currency, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+          [userIdNum, propertyIdNum, orderId, paymentId, amountNum, currency]
+        );
+        
+        await connection.commit();
+        
+        res.json({
+          success: true,
+          message: 'Payment history record inserted using fallback method',
+          historyId: fallbackResult.insertId,
+          isNewRecord: true,
+          fallback: true
+        });
+      } catch (fallbackError) {
+        await connection.rollback();
+        res.status(500).json({
+          success: false,
+          message: 'Failed to insert payment history record',
+          error: fallbackError.message
+        });
+      }
     }
-    
-    const [payments] = await connection.query(query, params);
-    
-    res.json({ success: true, isOwner, payments });
   } catch (error) {
-    handleDatabaseError(res, error, 'Error fetching property payments');
+    console.error('Error in ensure-history-record endpoint:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error during history record operation',
+      details: error.message
+    });
   } finally {
     if (connection) connection.release();
   }
 });
-// Test database connection
-app.get('/api/payments/test-db', async (req, res) => {
+
+// Simple direct insert endpoint with basic SQL
+app.post('/api/payments/basic-history-insert', verifyToken, async (req, res) => {
   let connection;
   try {
+    const userId = req.user.id || req.user.userId;
+    const { propertyId, orderId, paymentId, amount, currency = 'INR', paymentType = 'listing', notes = 'Basic insert' } = req.body;
+    
+    if (!propertyId || !orderId || !paymentId || !amount) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: propertyId, orderId, paymentId, and amount'
+      });
+    }
+    
     connection = await pool.getConnection();
-    const [result] = await connection.query('SELECT 1 as test');
-    res.json({ success: true, message: 'Database connection successful', result: result[0] });
+    
+    // Execute your direct SQL insert exactly as specified
+    const query = `INSERT INTO home_let_app_payment_history 
+                   (user_id, property_id, order_id, payment_id, amount, currency, payment_type, notes, created_at) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`;
+    
+    const [result] = await connection.query(query, [userId, propertyId, orderId, paymentId, amount, currency, paymentType, notes]);
+    
+    res.json({
+      success: true,
+      message: 'Payment history record created successfully',
+      historyId: result.insertId,
+      insertedData: {
+        userId, propertyId, orderId, paymentId, amount, currency, paymentType, notes
+      }
+    });
   } catch (error) {
-    handleDatabaseError(res, error, 'Database test failed');
+    console.error('Basic history insert error:', error);
+    
+    // If the error is about table not existing, create it and retry
+    if (error.code === 'ER_NO_SUCH_TABLE' && connection) {
+      try {
+        console.log('Table does not exist, creating it...');
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS home_let_app_payment_history (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            property_id INT NOT NULL,
+            order_id VARCHAR(255) NOT NULL,
+            payment_id VARCHAR(255) NOT NULL,
+            amount DECIMAL(10,2) NOT NULL,
+            currency VARCHAR(10) NOT NULL DEFAULT 'INR',
+            payment_type ENUM('listing', 'rent', 'deposit', 'other') DEFAULT 'listing',
+            notes TEXT,
+            created_at DATETIME NOT NULL,
+            INDEX idx_user_id (user_id),
+            INDEX idx_property_id (property_id),
+            INDEX idx_created_at (created_at)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `);
+        
+        // Try the insert again
+        const query = `INSERT INTO home_let_app_payment_history 
+                       (user_id, property_id, order_id, payment_id, amount, currency, payment_type, notes, created_at) 
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`;
+        
+        const userId = req.user.id || req.user.userId;
+        const { propertyId, orderId, paymentId, amount, currency = 'INR', paymentType = 'listing', notes = 'Basic insert' } = req.body;
+        
+        const [retryResult] = await connection.query(query, [userId, propertyId, orderId, paymentId, amount, currency, paymentType, notes]);
+        
+        res.json({
+          success: true,
+          message: 'Payment history table created and record inserted successfully',
+          historyId: retryResult.insertId,
+          tableCreated: true
+        });
+      } catch (retryError) {
+        console.error('Table creation and retry failed:', retryError);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to create table and insert record',
+          error: retryError.message
+        });
+      }
+    } else {
+      res.status(500).json({
+        success: false,
+        message: 'Failed to insert payment history record',
+        error: error.message
+      });
+    }
   } finally {
     if (connection) connection.release();
   }
