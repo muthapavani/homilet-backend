@@ -2708,7 +2708,7 @@ app.post('/api/payments/verify-payment', verifyToken, async (req, res) => {
          SET status = 'paid', payment_id = ?, verified_at = NOW(), updated_at = NOW() 
          WHERE order_id = ?`,
         [razorpay_payment_id, razorpay_order_id]
-      );b
+      );
       
       // Update property status if needed
       if (paymentType === 'listing') {
