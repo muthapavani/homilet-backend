@@ -299,9 +299,7 @@ const handleDatabaseError = (res, error, defaultMessage = "An error occurred") =
           created_at DATETIME NOT NULL,
           INDEX idx_user_id (user_id),
           INDEX idx_property_id (property_id),
-          INDEX idx_created_at (created_at),
-          FOREIGN KEY (property_id) REFERENCES home_let_app_properties(id) ON DELETE CASCADE,
-          FOREIGN KEY (user_id) REFERENCES user1(id) ON DELETE CASCADE
+          INDEX idx_created_at (created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
       `);
       console.log(" Created home_let_app_payment_history table");
@@ -3113,14 +3111,66 @@ app.post('/api/payments/basic-history-insert', verifyToken, async (req, res) => 
 
 // Get payment history for the logged-in user
 app.get('/api/payments/history', verifyToken, async (req, res) => {
+  console.log('Querying with userId:', userId);
+
+
   let connection;
   try {
     const userId = req.user.id || req.user.userId;
-    
+  
     connection = await pool.getConnection();
     
-    // Fetch payment history along with property information
-    const [payments] = await connection.query(`
+    // First check if the properties table name is correct
+    const [tables] = await connection.query(`
+      SELECT TABLE_NAME 
+      FROM information_schema.TABLES 
+      WHERE TABLE_SCHEMA = DATABASE() 
+      AND TABLE_NAME IN ('home_let_app_properties')
+    `);
+    
+    const propertiesTableName = tables.find(t => 
+      t.TABLE_NAME === 'home_let_app_properties'
+    )?.TABLE_NAME || 'home_let_app_properties';
+    
+    console.log(`Using properties table: ${propertiesTableName}`);
+    
+    // Check if payment history table exists
+    const [historyTables] = await connection.query(`
+      SELECT TABLE_NAME 
+      FROM information_schema.TABLES 
+      WHERE TABLE_SCHEMA = DATABASE() 
+      AND TABLE_NAME = 'home_let_app_payment_history'
+    `);
+    
+    if (historyTables.length === 0) {
+      // Create table if it doesn't exist
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS home_let_app_payment_history (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          property_id INT NOT NULL,
+          order_id VARCHAR(255) NOT NULL,
+          payment_id VARCHAR(255) NOT NULL,
+          amount DECIMAL(10,2) NOT NULL,
+          currency VARCHAR(10) NOT NULL DEFAULT 'INR',
+          payment_type ENUM('listing', 'rent', 'deposit', 'other') DEFAULT 'listing',
+          notes TEXT,
+          created_at DATETIME NOT NULL,
+          INDEX idx_user_id (user_id),
+          INDEX idx_property_id (property_id),
+          INDEX idx_created_at (created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+      
+      return res.json({
+        success: true,
+        history: [],
+        message: "Payment history table created. No records found yet."
+      });
+    }
+    
+    // If table exists, proceed with query
+    const query = `
       SELECT 
         ph.id,
         ph.property_id,
@@ -3133,10 +3183,14 @@ app.get('/api/payments/history', verifyToken, async (req, res) => {
         p.title AS property_title,
         p.address AS property_address
       FROM home_let_app_payment_history ph
-      LEFT JOIN properties p ON ph.property_id = p.id
+      LEFT JOIN ${propertiesTableName} p ON ph.property_id = p.id
       WHERE ph.user_id = ?
       ORDER BY ph.created_at DESC
-    `, [userId]);
+    `;
+    
+    const [payments] = await connection.query(query, [userId]);
+    
+    console.log(`Found ${payments.length} payment records for user ${userId}`);
     
     res.json({
       success: true,
@@ -3144,10 +3198,13 @@ app.get('/api/payments/history', verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching payment history:', error);
+    
+    // Send a more descriptive error message
     res.status(500).json({
       success: false,
       message: 'Failed to fetch payment history',
-      error: error.message
+      error: error.message,
+      details: error.stack ? error.stack.split('\n')[0] : null
     });
   } finally {
     if (connection) connection.release();
