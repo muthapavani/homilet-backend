@@ -3111,9 +3111,6 @@ app.post('/api/payments/basic-history-insert', verifyToken, async (req, res) => 
 
 // Get payment history for the logged-in user
 app.get('/api/payments/history', verifyToken, async (req, res) => {
-  console.log('Querying with userId:', userId);
-
-
   let connection;
   try {
     const userId = req.user.id || req.user.userId;
