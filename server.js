@@ -2375,36 +2375,56 @@ app.get('/api/payments/test-razorpay', async (req, res) => {
   }
 });
 
-// Check payment status
+// Check payment status - FIXED VERSION
 app.get('/api/payments/check-status', verifyToken, async (req, res) => {
   try {
     const { propertyId } = req.query;
     const userId = req.user.id || req.user.userId;
     
     if (!propertyId) return res.status(400).json({ success: false, message: 'Missing property ID' });
+    
+    console.log(`Checking payment status for property ${propertyId} by user ${userId}`);
 
     const connection = await pool.getConnection();
     try {
-      const [payments] = await connection.query(
+      // IMPORTANT: First check if ANY user has a valid payment for this property
+      const [anyPayments] = await connection.query(
         `SELECT * FROM home_let_app_payment_orders 
-         WHERE property_id = ? AND user_id = ? AND status = 'paid'
+         WHERE property_id = ? AND status = 'paid'
          ORDER BY created_at DESC LIMIT 1`,
-        [propertyId, userId]
+        [propertyId]
       );
       
-      if (payments.length === 0) {
-        return res.json({ success: true, status: 'unpaid',
-          details: { isSoldOut: false }});
+      console.log(`Found ${anyPayments.length} payments for property ${propertyId}`);
+      
+      // No one has paid for this property
+      if (anyPayments.length === 0) {
+        console.log(`No payments found for property ${propertyId}`);
+        return res.json({ 
+          success: true, 
+          status: 'unpaid',
+          isPaid: false,
+          isCurrentUserPayer: false,
+          details: { isSoldOut: false } 
+        });
       }
       
-      const payment = payments[0];
+      // Someone has paid - get the payment details
+      const payment = anyPayments[0];
+      const paymentUserId = payment.user_id;
       const paymentDate = new Date(payment.created_at);
       const diffDays = Math.ceil(Math.abs(new Date() - paymentDate) / (1000 * 60 * 60 * 24));
       
+      console.log(`Found payment by user ${paymentUserId} from ${diffDays} days ago`);
+      
+      // Check if payment has expired (more than 30 days old)
       if (diffDays > 30) {
+        console.log('Payment has expired');
         return res.json({
           success: true,
           status: 'expired',
+          isPaid: false,
+          isCurrentUserPayer: false,
           details: {
             isSoldOut: false,
             daysSincePayment: diffDays
@@ -2412,9 +2432,19 @@ app.get('/api/payments/check-status', verifyToken, async (req, res) => {
         });
       }
       
+      // Payment is valid - determine if current user made this payment
+      // Convert both to strings for comparison to avoid type issues
+      const isCurrentUserPayer = String(paymentUserId) === String(userId);
+      
+      console.log(`Current user is payer: ${isCurrentUserPayer ? 'YES' : 'NO'}`);
+      
       return res.json({
         success: true,
         status: 'paid',
+        isPaid: true,
+        isCurrentUserPayer: isCurrentUserPayer,
+        payerUserId: paymentUserId, // Include this so frontend can verify
+        daysSincePayment: diffDays,
         details: {
           orderId: payment.order_id,
           paymentId: payment.payment_id,
@@ -2422,15 +2452,20 @@ app.get('/api/payments/check-status', verifyToken, async (req, res) => {
           currency: payment.currency,
           date: payment.created_at,
           expiresIn: 30 - diffDays,
-          user:payment.user_id,
-          isSoldOut: true
+          user_id: paymentUserId, // Include the user ID who made the payment
+          isSoldOut: !isCurrentUserPayer // It's sold out if someone else paid
         }
       });
     } finally {
       connection.release();
     }
   } catch (error) {
-    handleDatabaseError(res, error, 'Failed to check payment status');
+    console.error('Failed to check payment status:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to check payment status',
+      error: error.message
+    });
   }
 });
 
